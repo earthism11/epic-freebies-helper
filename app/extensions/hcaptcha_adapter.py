@@ -172,6 +172,110 @@ def _point_inside_bounds(
     return x_min <= x <= x_max and y_min <= y <= y_max
 
 
+_GRID_CANVAS_CALIBRATIONS: dict[tuple, tuple] = {}
+
+
+def _calibrate_grid_canvas(
+    challenge_bbox: dict[str, float], x_line_space_num: int, y_line_space_num: int
+) -> tuple[int, int, int, int, int, int] | None:
+    """Measure where the challenge image lands inside the 1000x1000 grid canvas.
+
+    hcaptcha-challenger renders the grid helper with matplotlib using PAGE
+    coordinates as axis labels, but weaker models often answer in the canvas
+    *pixel* space instead of reading the axis labels. Render a calibration
+    figure with the exact same layout and detect a solid marker rect to recover
+    the exact pixel -> page transform.
+    """
+    cache_key = (
+        round(float(challenge_bbox["x"]), 2),
+        round(float(challenge_bbox["y"]), 2),
+        round(float(challenge_bbox["width"]), 2),
+        round(float(challenge_bbox["height"]), 2),
+        x_line_space_num,
+        y_line_space_num,
+    )
+    if cache_key in _GRID_CANVAS_CALIBRATIONS:
+        return _GRID_CANVAS_CALIBRATIONS[cache_key]
+
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        x, y = float(challenge_bbox["x"]), float(challenge_bbox["y"])
+        width, height = float(challenge_bbox["width"]), float(challenge_bbox["height"])
+
+        fig, ax = plt.subplots(figsize=(10, 10))
+        marker = np.zeros((max(int(height), 2), max(int(width), 2), 3), dtype=np.uint8)
+        marker[..., 0] = 255
+        ax.imshow(marker, extent=(x, x + width, y + height, y))
+        ax.set_xlim(x, x + width)
+        ax.set_ylim(y + height, y)
+        x_ticks = np.linspace(x, x + width, x_line_space_num)
+        y_ticks = np.linspace(y, y + height, y_line_space_num)
+        ax.set_xticks(x_ticks)
+        ax.set_yticks(y_ticks)
+        ax.set_xticklabels([str(round(t)) for t in x_ticks])
+        ax.set_yticklabels([str(round(t)) for t in y_ticks])
+        ax.tick_params(axis="both", which="major", labelsize=10)
+        ax.set_xlabel("X Coordinate")
+        ax.set_ylabel("Y Coordinate")
+        ax.set_title("Image with Coordinate Grid")
+        plt.tight_layout()
+        fig.canvas.draw()
+        canvas_w, canvas_h = fig.canvas.get_width_height()
+        buf = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+        buf = buf.reshape((canvas_h, canvas_w, 4))
+        plt.close(fig)
+
+        mask = (buf[..., 0] > 200) & (buf[..., 1] < 80) & (buf[..., 2] < 80)
+        ys, xs = np.where(mask)
+        if xs.size == 0:
+            return None
+        calibration = (
+            int(xs.min()),
+            int(xs.max()),
+            int(ys.min()),
+            int(ys.max()),
+            canvas_w,
+            canvas_h,
+        )
+        _GRID_CANVAS_CALIBRATIONS[cache_key] = calibration
+        return calibration
+    except Exception as err:
+        logger.warning("Grid canvas calibration failed | {}", type(err).__name__, err)
+        return None
+
+
+def _remap_points_from_grid_canvas(
+    points: list[Any],
+    *,
+    challenge_bbox: dict[str, float],
+    x_line_space_num: int,
+    y_line_space_num: int,
+) -> list[Any] | None:
+    """Remap canvas-pixel answers into page coordinates; None when not applicable."""
+    from types import SimpleNamespace
+
+    calibration = _calibrate_grid_canvas(challenge_bbox, x_line_space_num, y_line_space_num)
+    if calibration is None:
+        return None
+
+    x0, x1, y0, y1, canvas_w, canvas_h = calibration
+    for point in points:
+        px, py = float(point.x), float(point.y)
+        if not (0 <= px <= canvas_w and 0 <= py <= canvas_h):
+            return None  # answer is not in canvas space; do not touch it
+
+    bx, by = float(challenge_bbox["x"]), float(challenge_bbox["y"])
+    bw, bh = float(challenge_bbox["width"]), float(challenge_bbox["height"])
+    remapped = []
+    for point in points:
+        page_x = bx + (float(point.x) - x0) / max(x1 - x0, 1) * bw
+        page_y = by + (float(point.y) - y0) / max(y1 - y0, 1) * bh
+        remapped.append(SimpleNamespace(x=page_x, y=page_y))
+    return remapped
+
+
 def _build_point_prompt(
     user_prompt: str,
     *,
@@ -712,11 +816,37 @@ def apply_hcaptcha_drag_patch() -> None:
                 )
                 logger.debug(f'[{cid+1}/{crumb_count}]ToolInvokeMessage: {response.log_message}')
 
+                answer_points = response.points
                 validation_error = _point_answer_validation_error(
-                    response.points,
+                    answer_points,
                     challenge_bbox=challenge_bbox,
                     clickable_bounds=clickable_bounds,
                 )
+                if validation_error is not None:
+                    # Weaker models often answer in the grid canvas pixel space
+                    # (1000x1000 figure) instead of the labeled page coordinates.
+                    # Try remapping before giving up on the challenge.
+                    remapped = _remap_points_from_grid_canvas(
+                        response.points,
+                        challenge_bbox=challenge_bbox,
+                        x_line_space_num=self.config.coordinate_grid.x_line_space_num,
+                        y_line_space_num=self.config.coordinate_grid.y_line_space_num,
+                    )
+                    if remapped is not None:
+                        remap_error = _point_answer_validation_error(
+                            remapped,
+                            challenge_bbox=challenge_bbox,
+                            clickable_bounds=clickable_bounds,
+                        )
+                        if remap_error is None:
+                            logger.info(
+                                "Remapped hCaptcha answer from grid-canvas pixels to page "
+                                "coordinates | raw={} | page={}",
+                                [(float(p.x), float(p.y)) for p in response.points],
+                                [(round(float(p.x), 1), round(float(p.y), 1)) for p in remapped],
+                            )
+                            answer_points = remapped
+                            validation_error = None
                 if validation_error is not None:
                     logger.warning(
                         "Rejected unsafe hCaptcha point answer | reason={}", validation_error
@@ -726,7 +856,7 @@ def apply_hcaptcha_drag_patch() -> None:
                 self._spatial_point_reasoner.cache_response(
                     path=cache_key.joinpath(f"{cache_key.name}_{cid}_model_answer.json")
                 )
-                for point in response.points:
+                for point in answer_points:
                     await self.page.mouse.click(point.x, point.y, delay=180)
                     await self.page.wait_for_timeout(500)
 
