@@ -11,8 +11,12 @@ from loguru import logger
 from playwright.async_api import BrowserContext, Route, ViewportSize, async_playwright
 from requests import HTTPError, RequestException
 
+from extensions.camoufox_compat import install_camoufox_config_compat
 from extensions.playwright_runtime import install_playwright_frame_guard
 from settings import RECORD_DIR, settings
+
+# browserforge 指纹数据可能新于 Camoufox 浏览器构建，启动前放宽未知属性校验
+install_camoufox_config_compat()
 
 _VIEWPORT = ViewportSize(width=1920, height=1080)
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -139,6 +143,8 @@ def _is_camoufox_bootstrap_error(err: Exception) -> bool:
             "api.github.com/repos/daijro/camoufox/releases",
             "rate limit exceeded",
             "profile was last used with a newer version",
+            "unknown property",
+            "invalid propertytype",
             "browsertype.launch_persistent_context: target page, context or browser has been closed",
         )
     )
