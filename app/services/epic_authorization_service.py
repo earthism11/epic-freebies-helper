@@ -750,7 +750,11 @@ class EpicAuthorization:
                     pass
 
                 try:
-                    await self._await_login_outcome(point_url, agent, timeout_seconds=25)
+                    # After a successful captcha solve the page still needs to
+                    # POST the login and redirect; 25s regularly expires before
+                    # the redirect completes on datacenter IPs and discards an
+                    # in-flight login, so give it a fuller window.
+                    await self._await_login_outcome(point_url, agent, timeout_seconds=90)
                     login_confirmed = True
                     break
                 except PlaywrightTimeoutError:
