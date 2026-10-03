@@ -91,7 +91,11 @@ class EpicSettings(AgentConfig):
     captcha_response_dir: Path = HCAPTCHA_DIR.joinpath(".captcha")
 
     ENABLE_APSCHEDULER: bool = Field(default=True)
-    TASK_TIMEOUT_SECONDS: int = Field(default=900)
+    TASK_TIMEOUT_SECONDS: int = Field(default=1800)
+    # GLM-5.3-flash always thinks; combined with trans-pacific API latency each
+    # solve call can take 60-120s, so the per-challenge budget needs more than
+    # the library default of 120s to fit capture + solve + click + verify.
+    EXECUTION_TIMEOUT: float = Field(default=300.0)
     AUTH_MAX_ATTEMPTS: int = Field(default=5, ge=3, le=8)
     REDIS_URL: str = Field(default="redis://redis:6379/0")
     CELERY_WORKER_CONCURRENCY: int = Field(default=1)
