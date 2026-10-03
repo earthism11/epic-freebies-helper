@@ -551,6 +551,12 @@ class EpicAuthorization:
                             "Skipping immediate duplicate TOTP refresh after captcha; waiting for "
                             "Epic MFA response"
                         )
+                elif challenge_solved and "/id/login" in self.page.url:
+                    # Epic does not always auto-submit the sign-in form after the
+                    # challenge clears; push the form through with a fresh click.
+                    with suppress(Exception):
+                        await self.page.locator("#sign-in").click(timeout=5000, no_wait_after=True)
+                        logger.info("Re-clicked sign-in after successful captcha solve")
 
                 await self.page.wait_for_timeout(500)
                 continue
