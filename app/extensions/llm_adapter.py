@@ -1272,10 +1272,10 @@ class GLMCompatibleGenAIClient:
         self.aio = _GLMAsyncNamespace(settings, self._storage)
 
 
-def _limit_glm_provider_attempts(max_attempts: int = 2) -> bool:
+def _limit_glm_provider_attempts(max_attempts: int = 2, retry_wait_seconds: float = 3.0) -> bool:
     try:
         from hcaptcha_challenger.tools.internal.providers.gemini import GeminiProvider
-        from tenacity import stop_after_attempt
+        from tenacity import stop_after_attempt, wait_fixed
     except ImportError:
         return False
 
@@ -1283,6 +1283,10 @@ def _limit_glm_provider_attempts(max_attempts: int = 2) -> bool:
     if retrying is None:
         return False
     retrying.stop = stop_after_attempt(max_attempts)
+    # glm-4.6v-flash intermittently answers 429 "访问量过大" during peak hours;
+    # the upstream default (2 attempts, 3s apart) gives up too early to survive
+    # a burst, so the caller configures a denser budget for the free tier.
+    retrying.wait = wait_fixed(retry_wait_seconds)
     return True
 
 
@@ -1354,7 +1358,7 @@ def apply_glm_patch(settings: Any):
         from google import genai
 
         genai.Client = GLMCompatibleGenAIClient
-        if not _limit_glm_provider_attempts():
+        if not _limit_glm_provider_attempts(max_attempts=5, retry_wait_seconds=6):
             logger.warning("GLM provider retry budget could not be configured")
         logger.info(
             f"🚀 GLM 兼容补丁已应用 | 模型: {settings.GLM_MODEL} | 地址: {settings.GLM_BASE_URL}"
