@@ -669,10 +669,14 @@ class EpicAuthorization:
             status = await self._get_login_status(timeout_ms=1500)
             if status == "true":
                 return
-            if status == "false":
-                raise RuntimeError(
-                    "Epic store still reports isloggedin=false after authentication. "
-                    f"current_url={self.page.url}"
+            # isloggedin is set asynchronously after login: it reports "false"
+            # for a few seconds before flipping to "true". Keep polling until
+            # the deadline instead of failing the whole login immediately;
+            # the order-history probe below is the final fallback.
+            if status == "false" and time.monotonic() >= account_probe_at:
+                logger.debug(
+                    "Epic store still reports isloggedin=false; keep waiting | current_url='{}'",
+                    self.page.url,
                 )
 
             if not account_probe_attempted and time.monotonic() >= account_probe_at:
