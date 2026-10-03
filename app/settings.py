@@ -60,7 +60,7 @@ class EpicSettings(AgentConfig):
     )
 
     GLM_MODEL: str = Field(default="glm-4.6v", description="GLM vision-capable default model")
-    GLM_REQUEST_TIMEOUT_SECONDS: float = Field(default=50.0, gt=5.0, le=120.0)
+    GLM_REQUEST_TIMEOUT_SECONDS: float = Field(default=120.0, gt=5.0, le=120.0)
 
     BROWSER_BACKEND: str = Field(
         default="auto", description="Supported values: auto, camoufox, playwright"
